@@ -21,8 +21,8 @@
 
 /* ---- logging ---- */
 extern int g_log_level;
-#define LOG(...) do { if (g_log_level > 0) { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
-#define TRACE(...) do { if (g_log_level > 1) { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
+#define LOG(...) do { if (g_log_level > 0) { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } } while (0)
+#define TRACE(...) do { if (g_log_level > 1) { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); fflush(stderr); } } while (0)
 void rt_fatal(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 
 /* ---- shims ---- */
@@ -47,6 +47,7 @@ void rt_register_shims(const ShimDef *defs);
 
 /* Call a guest function from the host with stdcall/cdecl args already chosen. */
 uint32_t rt_invoke(CPU *c, uint32_t fn, int nargs, const uint32_t *args);
+int rt_has_code(uint32_t addr);
 
 /* ---- guest heap ---- */
 uint32_t gmalloc(uint32_t size);

@@ -1,0 +1,70 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Fetch and prepare recompiled game sources and dependencies
+        run: |
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          curl -L -s -o /tmp/base.apk https://github.com/ttom795/LBM_Android/releases/download/0.1.6/LegoBatman-0.1.6.apk
+          unzip -q -j /tmp/base.apk "lib/arm64-v8a/*" -d android/app/src/main/jniLibs/arm64-v8a/
+          rm -f /tmp/base.apk
+          # Convert prebuilt libmain.so into libd3db.so to provide d3dx9 and bink symbols
+          python3 tools/make_d3db.py android/app/src/main/jniLibs/arm64-v8a/libmain.so android/app/src/main/jniLibs/arm64-v8a/libd3db.so
+          # Remove prebuilt libmain.so so Gradle builds libmain.so fresh from gen/
+          rm -f android/app/src/main/jniLibs/arm64-v8a/libmain.so
+
+          # Fetch GOG recompiled sources (exe_00.c .. exe_63.c, exe_table.c, funcs_exe.h)
+          if [ ! -d "gen" ] || [ -z "$(ls -A gen/*.c 2>/dev/null)" ]; then
+            echo "Fetching GOG recompiled sources..."
+            mkdir -p gen
+            curl -L -s -o /tmp/gog_gen.tar.gz https://github.com/mininxd/LBM_Android/releases/download/v0.1.6-gog-assets/gog_gen.tar.gz
+            tar -xzf /tmp/gog_gen.tar.gz -C gen/
+            rm -f /tmp/gog_gen.tar.gz
+          fi
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Build Debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LegoBatman-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Release APK on Tag
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/app/build/outputs/apk/debug/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

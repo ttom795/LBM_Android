@@ -38,12 +38,20 @@ bool g_touch_on = true;       // the player's choice, kept in <save>/touch.cfg
 uint16_t g_buttons;
 float g_aspect = 16.f / 9.f;  // width / height of the screen
 
-// The game's VSync option byte, which the menu toggles and the settings save.
-const uint32_t G_VSYNC_OPTION = 0x9D0F3C;
-// Aspect ratio: the setting (pcconfig "Widescreen") and the menu's copy of it.
-// Its menu row is Skip Cutscenes now, so it stays at 3, "From Screen-Res"
-// (0 = 4:3, the game's default, 1 = 16:9, 2 = 16:10).
-const uint32_t G_ASPECT = 0x94C070, G_ASPECT_MENU = 0xAD7294, ASPECT_FROM_RES = 3;
+extern "C" int g_is_gog;
+
+// Addresses for Steam vs GOG: GOG .data addresses are shifted by -0x1000.
+static inline uint32_t vsync_option_addr() { return g_is_gog ? 0x9CFF3Cu : 0x9D0F3Cu; }
+static inline uint32_t aspect_addr() { return g_is_gog ? 0x94B070u : 0x94C070u; }
+static inline uint32_t aspect_menu_addr() { return g_is_gog ? 0xAD6294u : 0xAD7294u; }
+static inline uint32_t sound_target_addr() { return g_is_gog ? 0x99D380u : 0x99E380u; }
+static inline uint32_t sound_source_addr() { return g_is_gog ? 0x99D390u : 0x99E390u; }
+static inline uint32_t mode_list_ptr_addr() { return g_is_gog ? 0x9CFEECu : 0x9D0EECu; }
+static inline uint32_t mode_index_addr() { return g_is_gog ? 0x9CFF38u : 0x9D0F38u; }
+static inline uint32_t on_text_addr() { return g_is_gog ? 0x9D488Cu : 0x9D588Cu; }
+static inline uint32_t off_text_addr() { return g_is_gog ? 0x9D4890u : 0x9D5890u; }
+static inline uint32_t aspect_text_ptr_addr() { return g_is_gog ? 0x9D48B0u : 0x9D58B0u; }
+const uint32_t ASPECT_FROM_RES = 3;
 
 bool available() {
     if (!g_decided) {
@@ -62,8 +70,8 @@ bool enabled() {
     if (!available()) return false;
     // The game loads and resets its own VSync value; ours always wins, and only
     // the menu changes it (f_6C42C0 below).
-    M8(G_VSYNC_OPTION) = g_touch_on;
-    M32(G_ASPECT_MENU) = ASPECT_FROM_RES;
+    M8(vsync_option_addr()) = g_touch_on;
+    M32(aspect_menu_addr()) = ASPECT_FROM_RES;
     bool on = g_touch_on;
     if (g_was_on && !on) {
         // Switched off in the menu: release everything the overlay was holding.
@@ -298,16 +306,9 @@ static uint32_t guest_str(const char *s) {
     return g;
 }
 
-// Video (and Port) Settings item input handler. Items: 0 Screen Resolution
-// (shown as Resolution Scale, see d3d9_bridge.cpp), 1 Refresh Rate (now
-// Nintendo Button Layout), 2 VSync (now Touch Controls), 3 Aspect Ratio (now
-// Skip Cutscenes). Runs the game's code for the others, then keeps any change
-// it made to the VSync byte as the touch-controls choice.
-extern "C" void f_6C42C0_guest(CPU *c);
-extern "C" void f_6C42C0(CPU *c) {
-    // arg: menu input state; +0x0A item index, +0x5C/+0x60 left/right,
-    // +0x68 Back pressed, which reverts the menu's values (ours is restored
-    // by enabled()).
+// Video (and Port) Settings item input handler.
+// Steam: f_6C42C0, GOG: f_6C4290.
+static void video_settings_input_impl(CPU *c, void (*guest_fn)(CPU *)) {
     uint32_t in = ARG(0);
     int item = (int16_t)M16(in + 0xA);
     bool back = M32(in + 0x68) != 0;
@@ -323,26 +324,30 @@ extern "C" void f_6C42C0(CPU *c) {
                 LOG("touch: skip cutscenes %s", g_skip_cutscenes ? "on" : "off");
             }
             save_cfg();
-            M32(0x99E380) = M32(0x99E390);  // as the game does on a change (menu sound)
+            M32(sound_target_addr()) = M32(sound_source_addr());  // as the game does on a change (menu sound)
         }
         RETC(0);
     }
-    uint8_t before = M8(G_VSYNC_OPTION);
-    f_6C42C0_guest(c);
-    uint8_t after = M8(G_VSYNC_OPTION);
+    uint8_t before = M8(vsync_option_addr());
+    guest_fn(c);
+    uint8_t after = M8(vsync_option_addr());
     if (!available() || back || item != 2 || after == before) return;
     g_touch_on = after != 0;
     save_cfg();
     LOG("touch: controls %s", g_touch_on ? "on" : "off");
 }
 
-// Video Settings draw: values for the repurposed items. The value formats are
-// patched in touch_setup_guest ("%s: %d.%d" and "%s: %s"); the current mode
-// entry is swapped for the scale digits and On/Off text just while it draws.
-extern "C" void f_6C80D0_guest(CPU *c);
-extern "C" void f_6C80D0(CPU *c) {
-    if (!available() || !M32(0x9D0EEC)) { f_6C80D0_guest(c); return; }  // no mode list yet
-    uint32_t mode = M32(0x9D0EEC) + M32(0x9D0F38) * 16;
+extern "C" __attribute__((weak)) void f_6C42C0_guest(CPU *c);
+extern "C" void f_6C42C0(CPU *c) { if (f_6C42C0_guest) video_settings_input_impl(c, f_6C42C0_guest); }
+extern "C" __attribute__((weak)) void f_6C4290_guest(CPU *c);
+extern "C" void f_6C4290(CPU *c) { if (f_6C4290_guest) video_settings_input_impl(c, f_6C4290_guest); }
+
+// Video Settings draw: values for the repurposed items.
+// Steam: f_6C80D0, GOG: f_6C80A0.
+static void video_settings_draw_impl(CPU *c, void (*guest_fn)(CPU *)) {
+    uint32_t mode_list = mode_list_ptr_addr();
+    if (!available() || !M32(mode_list)) { guest_fn(c); return; }  // no mode list yet
+    uint32_t mode = M32(mode_list) + M32(mode_index_addr()) * 16;
     uint32_t w = M32(mode), h = M32(mode + 4), hz = M32(mode + 8);
     int ww = 1280, wh = 720;
     SDL_GetWindowSize((SDL_Window *)platform_window(), &ww, &wh);
@@ -351,27 +356,31 @@ extern "C" void f_6C80D0(CPU *c) {
     if (tenths > 10) tenths = 10;
     M32(mode) = tenths / 10;
     M32(mode + 4) = tenths % 10;
-    M32(mode + 8) = M32(g_nintendo ? 0x9D588C : 0x9D5890);  // the game's "On"/"Off"
-    // Aspect Ratio value: its case 3 prints "%s: %s" with the string at 0x9D58B0.
-    uint32_t aspect = M32(0xAD7294), aspect_text = M32(0x9D58B0);
-    M32(0xAD7294) = 3;
-    M32(0x9D58B0) = M32(g_skip_cutscenes ? 0x9D588C : 0x9D5890);
-    f_6C80D0_guest(c);
+    M32(mode + 8) = M32(g_nintendo ? on_text_addr() : off_text_addr());  // the game's "On"/"Off"
+    uint32_t asp_menu = aspect_menu_addr();
+    uint32_t asp_text = aspect_text_ptr_addr();
+    uint32_t aspect = M32(asp_menu), aspect_text = M32(asp_text);
+    M32(asp_menu) = 3;
+    M32(asp_text) = M32(g_skip_cutscenes ? on_text_addr() : off_text_addr());
+    guest_fn(c);
     M32(mode) = w;
     M32(mode + 4) = h;
     M32(mode + 8) = hz;
-    M32(0xAD7294) = aspect;
-    M32(0x9D58B0) = aspect_text;
+    M32(asp_menu) = aspect;
+    M32(asp_text) = aspect_text;
 }
 
-// The display mode list builder (0x52E2D0) drops modes under 640x480, which
-// hides the low resolution scales. It sorts the surviving modes with qsort
-// right after filtering (return address 0x52E3BD); refill the array with every
-// scaled mode there, so the rest of the builder sees them all.
-extern "C" void f_7401A0_guest(CPU *c);
+extern "C" __attribute__((weak)) void f_6C80D0_guest(CPU *c);
+extern "C" void f_6C80D0(CPU *c) { if (f_6C80D0_guest) video_settings_draw_impl(c, f_6C80D0_guest); }
+extern "C" __attribute__((weak)) void f_6C80A0_guest(CPU *c);
+extern "C" void f_6C80A0(CPU *c) { if (f_6C80A0_guest) video_settings_draw_impl(c, f_6C80A0_guest); }
+
+// The display mode list builder drops modes under 640x480, which hides low resolution scales.
+// It sorts the surviving modes with qsort right after filtering; refill array there.
+// Steam: f_7401A0 (ret 0x52E3BD), GOG: f_740170 (ret 0x52E39D).
 extern "C" void bridge_scaled_mode(uint32_t i, uint32_t *w, uint32_t *h);
-extern "C" void f_7401A0(CPU *c) {
-    if (available() && M32(c->r[4]) == 0x52E3BD && ARG(2) == 16) {
+static void qsort_display_modes_impl(CPU *c, void (*guest_fn)(CPU *), uint32_t expected_ret) {
+    if (available() && M32(c->r[4]) == expected_ret && ARG(2) == 16) {
         uint32_t base = ARG(0), n = ARG(1), obj = c->r[7];  // edi = display object
         for (uint32_t i = 0; i < n; i++) {
             uint32_t w, h;
@@ -383,14 +392,25 @@ extern "C" void f_7401A0(CPU *c) {
         }
         M32(obj + 0x618) = n;
     }
-    f_7401A0_guest(c);
+    if (guest_fn) guest_fn(c);
 }
 
+extern "C" __attribute__((weak)) void f_7401A0_guest(CPU *c);
+extern "C" void f_7401A0(CPU *c) { if (f_7401A0_guest) qsort_display_modes_impl(c, f_7401A0_guest, 0x52E3BDu); }
+extern "C" __attribute__((weak)) void f_740170_guest(CPU *c);
+extern "C" void f_740170(CPU *c) { if (f_740170_guest) qsort_display_modes_impl(c, f_740170_guest, 0x52E39Du); }
+
 // pcconfig "Widescreen" setter, used at load and by the menu's Accept.
-extern "C" void f_524860_guest(CPU *c);
+// Steam: f_524860, GOG: f_524840.
+extern "C" __attribute__((weak)) void f_524860_guest(CPU *c);
 extern "C" void f_524860(CPU *c) {
-    f_524860_guest(c);
-    if (available()) M32(G_ASPECT) = ASPECT_FROM_RES;
+    if (f_524860_guest) f_524860_guest(c);
+    if (available()) M32(aspect_addr()) = ASPECT_FROM_RES;
+}
+extern "C" __attribute__((weak)) void f_524840_guest(CPU *c);
+extern "C" void f_524840(CPU *c) {
+    if (f_524840_guest) f_524840_guest(c);
+    if (available()) M32(aspect_addr()) = ASPECT_FROM_RES;
 }
 
 extern "C" void touch_setup_guest(void) {
@@ -402,13 +422,18 @@ extern "C" void touch_setup_guest(void) {
     }
     input_set_nintendo(g_nintendo);
     input_set_skip_cutscenes(g_skip_cutscenes);
-    M8(G_VSYNC_OPTION) = g_touch_on;
-    M32(G_ASPECT) = M32(G_ASPECT_MENU) = ASPECT_FROM_RES;
+    M8(vsync_option_addr()) = g_touch_on;
+    M32(aspect_addr()) = M32(aspect_menu_addr()) = ASPECT_FROM_RES;
     uint32_t touch = guest_str("Touch Controls"), quit = guest_str("Quit Game"),
              scale = guest_str("Resolution Scale"), layout = guest_str("Nintendo Button Layout"),
              skip = guest_str("Skip Cutscenes"), title = guest_str("Video and Port Settings");
-    strcpy((char *)MEM + 0x872A10, "%s: %d.%d");  // was "%s: %d x %d"
-    strcpy((char *)MEM + 0x872A04, "%s: %s");     // was "%s: %dHz"
+    if (g_is_gog) {
+        strcpy((char *)MEM + 0x872928, "%s: %d.%d");  // was "%s: %d x %d"
+        strcpy((char *)MEM + 0x87291C, "%s: %s");     // was "%s: %dHz"
+    } else {
+        strcpy((char *)MEM + 0x872A10, "%s: %d.%d");  // was "%s: %d x %d"
+        strcpy((char *)MEM + 0x872A04, "%s: %s");     // was "%s: %dHz"
+    }
     // PC menu text tables (one per language): { id, char *text } pairs in .data.
     // Ids: 1 Quit to Windows, 0x12 Video Settings, 0x13 Screen Resolution,
     // 0x14 Refresh Rate, 0x15 Vertical Sync, 0x16 Aspect Ratio.

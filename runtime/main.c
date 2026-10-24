@@ -9,21 +9,42 @@
 #include <unistd.h>
 #include <string.h>
 
+#include <SDL2/SDL.h>
+
 uint8_t *MEM;
 int g_log_level = 1;
 char g_game_dir[1024] = ".";
 char g_save_dir[1024] = "./save";
 uint32_t g_image_size;
 uint32_t g_entry;
+int g_is_gog = 0;
+static FILE *g_direct_log = NULL;
 
 void rt_fatal(const char *fmt, ...) {
+    char buf[2048];
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "FATAL: ");
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
+    vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
+
+    fprintf(stderr, "FATAL: %s\n", buf);
     fflush(stderr);
+
+    if (g_direct_log) {
+        fprintf(g_direct_log, "FATAL: %s\n", buf);
+        fflush(g_direct_log);
+    }
+
+    FILE *f = fopen("/sdcard/LegoBatman/log.txt", "a");
+    if (!f) f = fopen("/storage/emulated/0/LegoBatman/log.txt", "a");
+    if (f) {
+        fprintf(f, "\nFATAL: %s\n", buf);
+        fflush(f);
+        fclose(f);
+    }
+
+    /* Show on-screen error dialog on Android/desktop window before terminating */
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "LEGO Batman Error", buf, NULL);
     abort();
 }
 
@@ -43,10 +64,24 @@ static uint32_t load_pe(const char *path, uint32_t want_base, const char *modnam
     if (fread(buf, 1, n, f) != (size_t)n) rt_fatal("short read %s", path);
     fclose(f);
     uint32_t pe = rd32(buf + 0x3C);
-    if (rd32(buf + pe) != 0x4550) rt_fatal("not a PE file");
+    if (rd32(buf + pe) != 0x4550) rt_fatal("not a PE file: %s", path);
+    uint16_t machine = rd16(buf + pe + 4);
+    if (machine != 0x014c) {
+        if (machine == 0x8664) {
+            rt_fatal("%s is a 64-bit (x64) PE, but a 32-bit (x86) PE is required!\n"
+                     "On 64-bit Windows, copy d3dx9_35.dll from C:\\Windows\\SysWOW64\\ (NOT System32).",
+                     path);
+        } else {
+            rt_fatal("%s is not a 32-bit x86 PE (machine 0x%04x, expected 0x014c)", path, machine);
+        }
+    }
     uint16_t nsec = rd16(buf + pe + 6);
     uint16_t optsz = rd16(buf + pe + 20);
     const uint8_t *opt = buf + pe + 24;
+    uint16_t magic = rd16(opt);
+    if (magic != 0x010B) {
+        rt_fatal("%s optional header magic is 0x%04x (expected 0x010B for 32-bit PE)", path, magic);
+    }
     uint32_t pref = rd32(opt + 28);
     uint32_t base = want_base ? want_base : pref;
     uint32_t entry = rd32(opt + 16) ? base + rd32(opt + 16) : 0;
@@ -84,11 +119,15 @@ static uint32_t load_pe(const char *path, uint32_t want_base, const char *modnam
             const char *nm = (const char *)(MEM + base + M32(names + 4 * i));
             uint16_t o = M16(ords + 2 * i);
             rt_register_data(modname, nm, base + M32(funcs + 4 * o));
+            rt_modules_register_data(modname, nm, base + M32(funcs + 4 * o));
         }
         for (uint32_t i = 0; i < nfuncs; i++) {
             char nm[16];
             snprintf(nm, sizeof nm, "#%u", ordbase + i);
-            if (M32(funcs + 4 * i)) rt_register_data(modname, nm, base + M32(funcs + 4 * i));
+            if (M32(funcs + 4 * i)) {
+                rt_register_data(modname, nm, base + M32(funcs + 4 * i));
+                rt_modules_register_data(modname, nm, base + M32(funcs + 4 * i));
+            }
         }
     }
     /* imports */
@@ -109,7 +148,25 @@ static uint32_t load_pe(const char *path, uint32_t want_base, const char *modnam
     extern void rt_module_add(const char *, uint32_t);
     rt_module_add(modname, base);
     LOG("loaded %s at %08x: entry %08x image %08x", path, base, entry, image_size);
-    if (!strcmp(modname, "LEGOBatman.exe")) { g_entry = entry; g_image_size = image_size; }
+    if (!strcmp(modname, "LEGOBatman.exe")) {
+        g_entry = entry;
+        g_image_size = image_size;
+        if (entry == 0x0073d6a3u) {
+            g_is_gog = 1;
+            LOG("detected GOG executable release");
+        }
+        if (!rt_has_code(g_entry)) {
+            if (rt_has_code(0x0073d6a3u)) {
+                LOG("entry %08x has no recompiled code; falling back to GOG entry 0073d6a3", g_entry);
+                g_entry = 0x0073d6a3u;
+                g_is_gog = 1;
+            } else if (rt_has_code(0x0073d694u)) {
+                LOG("entry %08x has no recompiled code; falling back to Steam entry 0073d694", g_entry);
+                g_entry = 0x0073d694u;
+                g_is_gog = 0;
+            }
+        }
+    }
     return entry;
 }
 
@@ -184,30 +241,84 @@ static void install_crash_handler(void) {}
 int main(int argc, char **argv) {
     install_crash_handler();
     const char *env = getenv("LB_LOG");
-    if (env) g_log_level = atoi(env);
 #ifdef __ANDROID__
-    /* Game files live in the app's external files folder:
-     * <ext>/game holds the install (DATs, Movies, Audio, LEGOBatman.exe,
-     * d3dx9_35.dll, binkw32.dll), <ext>/save the saves, <ext>/log.txt the log. */
-    const char *ext = SDL_AndroidGetExternalStoragePath();
-    if (ext) {
-        char logp[512];
-        snprintf(g_game_dir, sizeof g_game_dir, "%s/game", ext);
-        snprintf(g_save_dir, sizeof g_save_dir, "%s/save", ext);
-        mkdir(g_game_dir, 0777);
-        mkdir(g_save_dir, 0777);
-        snprintf(logp, sizeof logp, "%s/log.txt", ext);
-        if (freopen(logp, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
-        if (!env) g_log_level = 1;
+    if (!env) env = getenv("LB_DEBUG");
+    g_log_level = env ? atoi(env) : 1;
+
+    if (argc > 1 && argv[1] && argv[1][0]) snprintf(g_game_dir, sizeof g_game_dir, "%s", argv[1]);
+    if (argc > 2 && argv[2] && argv[2][0]) snprintf(g_save_dir, sizeof g_save_dir, "%s", argv[2]);
+
+    /* Ensure directory tree exists */
+    mkdir("/storage/emulated/0/LegoBatman", 0777);
+    mkdir("/sdcard/LegoBatman", 0777);
+    mkdir("/storage/emulated/0/LegoBatman/save", 0777);
+    mkdir("/sdcard/LegoBatman/save", 0777);
+
+    const char *log_targets[] = {
+        "/storage/emulated/0/LegoBatman/log.txt",
+        "/sdcard/LegoBatman/log.txt",
+        NULL
+    };
+    for (int i = 0; log_targets[i]; i++) {
+        g_direct_log = fopen(log_targets[i], "a");
+        if (g_direct_log) {
+            setvbuf(g_direct_log, NULL, _IONBF, 0);
+            freopen(log_targets[i], "a", stderr);
+            setvbuf(stderr, NULL, _IONBF, 0);
+            break;
+        }
     }
+    if (!g_direct_log) {
+        const char *ext = SDL_AndroidGetExternalStoragePath();
+        if (ext) {
+            char logp[512];
+            snprintf(logp, sizeof logp, "%s/log.txt", ext);
+            g_direct_log = fopen(logp, "a");
+            if (g_direct_log) {
+                setvbuf(g_direct_log, NULL, _IONBF, 0);
+                freopen(logp, "a", stderr);
+                setvbuf(stderr, NULL, _IONBF, 0);
+            }
+        }
+    }
+    LOG("--- LEGO Batman native main started ---");
+
+    /* Candidate paths for game files */
+    const char *candidates[] = {
+        g_game_dir,
+        "/storage/emulated/0/LegoBatman",
+        "/storage/emulated/0/LegoBatman/game",
+        "/sdcard/LegoBatman",
+        "/sdcard/LegoBatman/game",
+        NULL
+    };
+    for (int i = 0; candidates[i]; i++) {
+        if (!candidates[i][0]) continue;
+        char e1[512], e2[512], d1[512], d2[512];
+        struct stat st;
+        snprintf(e1, sizeof e1, "%s/LEGOBatman.exe", candidates[i]);
+        snprintf(e2, sizeof e2, "%s/legobatman.exe", candidates[i]);
+        snprintf(d1, sizeof d1, "%s/GAME.DAT", candidates[i]);
+        snprintf(d2, sizeof d2, "%s/game.dat", candidates[i]);
+        if (stat(e1, &st) == 0 || stat(e2, &st) == 0 || stat(d1, &st) == 0 || stat(d2, &st) == 0) {
+            snprintf(g_game_dir, sizeof g_game_dir, "%s", candidates[i]);
+            break;
+        }
+    }
+    mkdir(g_game_dir, 0777);
+    mkdir(g_save_dir, 0777);
 #endif
+#ifndef __ANDROID__
     if (argc > 1) snprintf(g_game_dir, sizeof g_game_dir, "%s", argv[1]);
     if (argc > 2) snprintf(g_save_dir, sizeof g_save_dir, "%s", argv[2]);
+#endif
     MEM = mmap(NULL, 1ull << 32, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (MEM == MAP_FAILED) rt_fatal("cannot reserve guest address space");
     /* keep the null page inaccessible to catch null derefs */
     mprotect(MEM, 0x10000, PROT_NONE);
     rt_init_shims();
+    extern void rt_modules_init(void);
+    rt_modules_init();
     if (chdir(g_game_dir) != 0) rt_fatal("chdir %s", g_game_dir);
     extern void platform_init(void);
     platform_init();
@@ -226,8 +337,14 @@ int main(int argc, char **argv) {
     touch_setup_guest();
     for (int i = 0; i < ndll; i++) {
         uint32_t args[3] = {g_dll_bases[i], 1, 0};
-        if (dll_entries[i] && !rt_invoke(c, dll_entries[i], 3, args))
-            rt_fatal("DllMain of %s failed", g_dll_modules[i]);
+        if (dll_entries[i]) {
+            if (!rt_has_code(dll_entries[i])) {
+                LOG("warning: %s entry point %08x has no recompiled code; skipping DllMain",
+                    g_dll_modules[i], dll_entries[i]);
+            } else if (!rt_invoke(c, dll_entries[i], 3, args)) {
+                rt_fatal("DllMain of %s failed", g_dll_modules[i]);
+            }
+        }
     }
     /* push a return address that ends the process when main returns */
     c->r[4] -= 4;

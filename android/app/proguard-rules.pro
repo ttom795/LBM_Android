@@ -1,17 +1,20 @@
-# Add project specific ProGuard rules here.
-# By default, the flags in this file are appended to flags specified
-# in [sdk]/tools/proguard/proguard-android.txt
-# You can edit the include path and order by changing the proguardFiles
-# directive in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ProGuard and R8 optimization rules for LEGO Batman Android
 
-# Add any project specific keep options here:
+# SDL2 JNI bindings and Activity lifecycle (mandatory for JNI calls from libSDL2.so)
+-keep class org.libsdl.app.** { *; }
+-keep class com.tj.legobatman.** { *; }
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Keep all native methods and their enclosing classes
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# Keep reflection methods called by SDL2 C code
+-keepclassmembers class * {
+    public static java.lang.Object getContext();
+    public java.io.File getExternalFilesDir(java.lang.String);
+}
+
+# Preserve line numbers and attributes for clean debugging
+-keepattributes SourceFile,LineNumberTable,*Annotation*,Signature,InnerClasses,EnclosingMethod
+-dontwarn org.libsdl.app.**

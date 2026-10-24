@@ -1,42 +1,60 @@
 apply plugin: 'com.android.application'
 
+def hasGen = file("${rootDir}/../gen").exists() && file("${rootDir}/../gen").list()?.any { it.endsWith('.c') }
+
 android {
     namespace "com.tj.legobatman"
     compileSdkVersion 34
-    ndkVersion project.hasProperty('ndkVersion') ? project.property('ndkVersion') : null
+    if (project.hasProperty('ndkVersion')) {
+        ndkVersion project.property('ndkVersion')
+    }
     defaultConfig {
         applicationId "com.tj.legobatman"
         minSdkVersion 28
         targetSdkVersion 34
         versionCode 7
         versionName "0.1.6"
-        externalNativeBuild {
-            cmake {
-                arguments "-DANDROID_STL=c++_shared", "-DANDROID_PLATFORM=android-28"
-                abiFilters 'arm64-v8a'
+        if (hasGen) {
+            externalNativeBuild {
+                cmake {
+                    arguments "-DANDROID_STL=c++_shared", "-DANDROID_PLATFORM=android-28"
+                    abiFilters 'arm64-v8a'
+                }
             }
         }
     }
     buildTypes {
         // The recompiled game is large; debug builds would be unusably slow.
         debug {
-            externalNativeBuild { cmake { arguments "-DCMAKE_BUILD_TYPE=Release" } }
+            if (hasGen) {
+                externalNativeBuild { cmake { arguments "-DCMAKE_BUILD_TYPE=Release" } }
+            }
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             debuggable true
             jniDebuggable false
         }
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.debug
         }
     }
-    externalNativeBuild {
-        cmake {
-            path 'jni/CMakeLists.txt'
-            version '3.22.1'
+    if (hasGen) {
+        externalNativeBuild {
+            cmake {
+                path 'jni/CMakeLists.txt'
+                version '3.22.1'
+            }
         }
     }
     packagingOptions {
-        jniLibs { useLegacyPackaging true }
+        jniLibs {
+            useLegacyPackaging true
+            pickFirsts += ['**/*.so']
+        }
     }
     lint { abortOnError false }
 }

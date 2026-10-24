@@ -76,11 +76,16 @@ class Unsupported(Exception):
 
 # Guest functions implemented on the host instead (runtime defines f_X).
 HOST_OVERRIDES = {
-    "exe": {0x51E280,   # IsXInputDevice via WMI -> runtime/input.c
-            0x6C42C0,   # Video Settings item input (VSync = touch toggle) -> runtime/touch.cpp
-            0x6C80D0,   # Video Settings draw (scale / button layout values) -> runtime/touch.cpp
-            0x7401A0,   # qsort: refills the filtered display mode list -> runtime/touch.cpp
-            0x524860},  # pcconfig "Widescreen" setter: forced to From Screen-Res -> runtime/touch.cpp
+    "exe": {0x51E280,   # IsXInputDevice via WMI (Steam) -> runtime/input.c
+            0x6C42C0,   # Video Settings item input (Steam) -> runtime/touch.cpp
+            0x6C80D0,   # Video Settings draw (Steam) -> runtime/touch.cpp
+            0x7401A0,   # qsort: refills display mode list (Steam) -> runtime/touch.cpp
+            0x524860,   # pcconfig "Widescreen" setter (Steam) -> runtime/touch.cpp
+            0x51E240,   # IsXInputDevice via WMI (GOG) -> runtime/input.c
+            0x6C4290,   # Video Settings item input (GOG) -> runtime/touch.cpp
+            0x6C80A0,   # Video Settings draw (GOG) -> runtime/touch.cpp
+            0x740170,   # qsort: refills display mode list (GOG) -> runtime/touch.cpp
+            0x524840},  # pcconfig "Widescreen" setter (GOG) -> runtime/touch.cpp
 }
 
 

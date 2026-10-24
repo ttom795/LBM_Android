@@ -19,11 +19,14 @@ void input_set_nintendo(int on) { g_nintendo = on; g_packet++; }
  * gets past the "press any key" screen of the level loading next. */
 static int g_skip_cutscenes;
 void input_set_skip_cutscenes(int on) { g_skip_cutscenes = on; }
-/* The level being played: world (0x960894) +0x12C; level +0x64 flags, where
+extern int g_is_gog;
+/* The level being played: world (0x960894 Steam, 0x95F894 GOG) +0x12C; level +0x64 flags, where
  * 0x20 intro, 0x40 cutscene/midtro and 0x80 outro mark cutscene levels. */
 static int in_cutscene_level(void) {
-    uint32_t w = M32(0x960894), lv = w >= 0x10000 ? M32(w + 0x12C) : 0;
-    if (lv < 0x10000) lv = M32(0xACA89C);  /* none yet: the one being started */
+    uint32_t world_addr = g_is_gog ? 0x95F894u : 0x960894u;
+    uint32_t level_start_addr = g_is_gog ? 0xAC989Cu : 0xACA89Cu;
+    uint32_t w = M32(world_addr), lv = w >= 0x10000 ? M32(w + 0x12C) : 0;
+    if (lv < 0x10000) lv = M32(level_start_addr);  /* none yet: the one being started */
     return lv >= 0x10000 && (M8(lv + 0x64) & 0xE0);
 }
 static uint16_t skip_tap(void) {
@@ -165,9 +168,12 @@ int input_pad_count(void) {
     return n;
 }
 
-/* Replaces the game's IsXInputDevice (0x51E280, cdecl, GUID *guidProduct),
+/* Replaces the game's IsXInputDevice (0x51E280 for Steam, 0x51E240 for GOG, cdecl, GUID *guidProduct),
  * which asks WMI for "IG_" device ids. Our pads use the 360 pad's product id. */
 void f_51E280(CPU *c) {
+    RETC(M32(ARG(0)) == 0x028E045Eu);
+}
+void f_51E240(CPU *c) {
     RETC(M32(ARG(0)) == 0x028E045Eu);
 }
 

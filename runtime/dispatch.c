@@ -36,7 +36,7 @@ static GuestFn lookup(uint32_t a) {
     for (unsigned m = 0; m < g_nmodules; m++) {
         const FnEntry *t = g_modules[m].table;
         unsigned n = rt_module_count(m);
-        if (!n || a < t[0].addr || a > t[n - 1].addr) continue;
+        if (!t || !n || a < t[0].addr || a > t[n - 1].addr) continue;
         unsigned lo = 0, hi = n;
         while (lo < hi) {
             unsigned mid = (lo + hi) / 2;
@@ -52,6 +52,14 @@ static GuestFn lookup(uint32_t a) {
     return NULL;
 }
 
+int rt_has_code(uint32_t a) {
+    if (a >= GUEST_THUNK_BASE) {
+        uint32_t i = (a - GUEST_THUNK_BASE) / 4;
+        return i < g_nthunks && g_thunks[i].fn != NULL;
+    }
+    return lookup(a) != NULL;
+}
+
 void rt_call(CPU *c, uint32_t t) {
     if (t >= GUEST_THUNK_BASE) {
         uint32_t i = (t - GUEST_THUNK_BASE) / 4;
@@ -61,19 +69,46 @@ void rt_call(CPU *c, uint32_t t) {
                 rt_fatal("unimplemented import %s (called from %08x)", g_thunks[i].name, M32(c->r[4]));
             g_thunks[i].fn(c);
             return;
+        } else {
+            rt_fatal("unknown import thunk index %u (addr %08x, called from %08x, registered %u)",
+                     i, t, M32(c->r[4]), g_nthunks);
         }
     }
     GuestFn fn = lookup(t);
     if (!fn) {
         uint32_t ret = M32(c->r[4]), esp = c->r[4];
         uint32_t a0 = M32(esp + 4);
-        fprintf(stderr, "bad call: esp=%08x args %08x %08x %08x %08x\n", esp, a0, M32(esp + 8), M32(esp + 12), M32(esp + 16));
+        fprintf(stderr, "=== BAD CALL / CRASH DIAGNOSTICS ===\n");
+        fprintf(stderr, "Target: %08x (no recompiled code)\n", t);
+        fprintf(stderr, "Return address: %08x\n", ret);
+        fprintf(stderr, "Registers:\n");
+        fprintf(stderr, "  eax=%08x ecx=%08x edx=%08x ebx=%08x\n", c->r[0], c->r[1], c->r[2], c->r[3]);
+        fprintf(stderr, "  esp=%08x ebp=%08x esi=%08x edi=%08x\n", c->r[4], c->r[5], c->r[6], c->r[7]);
+        fprintf(stderr, "Stack dump from esp=%08x:\n", esp);
+        for (int i = 0; i < 8; i++) {
+            fprintf(stderr, "  [esp+%02x] = %08x\n", i * 4, M32(esp + i * 4));
+        }
         if (a0 >= 0x10000) {
             uint32_t vt = M32(a0);
-            fprintf(stderr, "  [arg0] = %08x %08x %08x %08x\n", vt, M32(a0 + 4), M32(a0 + 8), M32(a0 + 12));
-            if (vt >= 0x10000) fprintf(stderr, "  vtbl: %08x %08x %08x ... [19]=%08x\n", M32(vt), M32(vt + 4), M32(vt + 8), M32(vt + 0x4c));
+            fprintf(stderr, "Object at a0 (%08x): vtbl=%08x +4=%08x +8=%08x\n", a0, vt, M32(a0 + 4), M32(a0 + 8));
+            if (vt >= 0x10000) {
+                fprintf(stderr, "  vtbl methods: [0]=%08x [1]=%08x [2]=%08x [3]=%08x [4]=%08x\n",
+                        M32(vt), M32(vt + 4), M32(vt + 8), M32(vt + 12), M32(vt + 16));
+            }
         }
-        rt_fatal("no recompiled code at %08x (return address %08x)", t, ret);
+        fprintf(stderr, "====================================\n");
+        fflush(stderr);
+        rt_fatal("no recompiled code at %08x (return address %08x)\n\n"
+                 "Registers:\n"
+                 "eax=%08x ecx=%08x edx=%08x ebx=%08x\n"
+                 "esp=%08x ebp=%08x esi=%08x edi=%08x\n\n"
+                 "Stack:\n"
+                 "[esp+0]=%08x [esp+4]=%08x\n"
+                 "[esp+8]=%08x [esp+c]=%08x",
+                 t, ret,
+                 c->r[0], c->r[1], c->r[2], c->r[3],
+                 c->r[4], c->r[5], c->r[6], c->r[7],
+                 M32(esp), M32(esp + 4), M32(esp + 8), M32(esp + 12));
     }
     fn(c);
 }
