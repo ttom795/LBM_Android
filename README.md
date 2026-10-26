@@ -8,7 +8,7 @@ Discord: http://discord.gg/df3cK2JCqs
 
 Youtube link below:
 
-[![Watch the video](https://img.youtube.com/vi/mbDd5ZudTKU/hqdefault.jpg)](https://www.youtube.com/embed/mbDd5ZudTKU)
+[![Watch the video](https://img.youtube.com/vi/cPzNiIRWJdw/hqdefault.jpg)](https://www.youtube.com/embed/cPzNiIRWJdw)
 
 ## Functionality
 - **Static recompilation.** This project is *not* a decompilation but a recompilation; Basically, it's just converting one type of code to another rather than re-creating the original source.
