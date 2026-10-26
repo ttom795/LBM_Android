@@ -19,9 +19,11 @@ Youtube link below:
 ![Alt text](images/menu.png)
 In-game, under Options > **Video and Port Settings**:
 - **Resolution Scale** (0.2 to 1.0): renders at a reduced screen resolution and stretches the image to fill the screen.
-- **Touch Controls**: show or hide the on-screen buttons.
 - **Nintendo Button Layout**: swaps A/B and X/Y on physical controllers.
-- **Skip Cutscenes**.
+- **Touch Controls**: show or hide the on-screen buttons.
+- **Skip Cutscenes**: auto-skips as soon as loading is done.
+- **FPS Counter**: show or hide the FPS counter (top left of screen).
+- **Gyro Aiming**: toggles the ability to aim batarangs/targeted attacks with your device's gyroscope.
 
 # Instructions
 

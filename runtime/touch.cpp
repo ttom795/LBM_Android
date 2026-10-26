@@ -35,6 +35,7 @@ Finger g_fingers[10];
 float g_stick_x, g_stick_y;   // knob offset, -1..1
 bool g_available, g_decided, g_seen, g_was_on;
 bool g_touch_on = true;       // the player's choice, kept in <save>/touch.cfg
+bool g_fps_on;                // FPS counter in the top left corner (launcher option)
 uint16_t g_buttons;
 float g_aspect = 16.f / 9.f;  // width / height of the screen
 
@@ -195,6 +196,48 @@ void make_texture(IDirect3DDevice9 *d) {
     g_tex->UnlockRect(0);
 }
 
+void rect(Vtx *v, float x0, float y0, float x1, float y1, uint32_t color) {
+    Vtx q[4] = {{x0, y0, 0, 1, color, 0, 0}, {x1, y0, 0, 1, color, 1, 0},
+                {x0, y1, 0, 1, color, 0, 1}, {x1, y1, 0, 1, color, 1, 1}};
+    v[0] = q[0]; v[1] = q[1]; v[2] = q[2];
+    v[3] = q[2]; v[4] = q[1]; v[5] = q[3];
+}
+
+// Frames presented per second, measured over half-second windows.
+int g_fps;
+void fps_tick() {
+    static uint32_t start, frames;
+    uint32_t now = SDL_GetTicks();
+    if (!start) start = now;
+    frames++;
+    if (now - start >= 500) {
+        g_fps = (int)((frames * 1000 + (now - start) / 2) / (now - start));
+        start = now;
+        frames = 0;
+    }
+}
+
+// The FPS number as seven-segment digits on a dark backing; returns quads used.
+int fps_quads(Vtx *v, float h) {
+    static const uint8_t seg[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
+    char txt[8];
+    int len = snprintf(txt, sizeof txt, "%d", g_fps > 999 ? 999 : g_fps);
+    float H = h * 0.045f, W = H * 0.55f, t = H * 0.13f, gap = H * 0.25f, m = h * 0.02f;
+    float x = m + gap, y = m + gap;
+    int n = 0;
+    rect(v + 6 * n++, m, m, x + len * (W + gap), y + H + gap, 0xA0000000);
+    for (int i = 0; i < len; i++, x += W + gap) {
+        uint8_t sg = seg[txt[i] - '0'];
+        float xm = x + W, ym = y + H / 2, yb = y + H;
+        const float r[7][4] = {
+            {x, y, xm, y + t}, {xm - t, y, xm, ym}, {xm - t, ym, xm, yb}, {x, yb - t, xm, yb},
+            {x, ym, x + t, yb}, {x, y, x + t, ym}, {x, ym - t / 2, xm, ym + t / 2}};
+        for (int k = 0; k < 7; k++)
+            if (sg & 1 << k) rect(v + 6 * n++, r[k][0], r[k][1], r[k][2], r[k][3], 0xFF60FF60);
+    }
+    return n;
+}
+
 void quad(Vtx *v, float cx, float cy, float r, float w, float h, uint32_t color) {
     float x0 = (cx - r / g_aspect) * w, x1 = (cx + r / g_aspect) * w;
     float y0 = (cy - r) * h, y1 = (cy + r) * h;
@@ -206,7 +249,9 @@ void quad(Vtx *v, float cx, float cy, float r, float w, float h, uint32_t color)
 } // namespace
 
 void touch_draw(IDirect3DDevice9 *d) {
-    if (!enabled()) return;
+    bool touch = enabled();
+    fps_tick();
+    if (!touch && !g_fps_on) return;
     IDirect3DSurface9 *bb = nullptr, *old = nullptr;
     if (FAILED(d->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb))) return;
     D3DSURFACE_DESC desc;
@@ -256,21 +301,34 @@ void touch_draw(IDirect3DDevice9 *d) {
     d->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
     d->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
 
-    Vtx v[6 * (NB + 2)];
-    int n = 0;
-    float sx, sy;
-    stick_pos(&sx, &sy);
-    quad(v + 6 * n++, sx, sy, STICK_R, w, h, 0x90FFFFFF);
-    quad(v + 6 * n++, sx + g_stick_x * STICK_R / g_aspect, sy + g_stick_y * STICK_R, STICK_R * 0.45f, w, h,
-         0xD0FFFFFF);
-    for (int i = 0; i < NB; i++) {
-        float bx, by;
-        button_pos(k_buttons[i], &bx, &by);
-        uint32_t col = k_buttons[i].color;
-        uint32_t a = (g_buttons & k_buttons[i].bit) ? 0xF0 : 0x90;
-        quad(v + 6 * n++, bx, by, k_buttons[i].r, w, h, (col & 0xFFFFFF) | a << 24);
+    if (touch) {
+        Vtx v[6 * (NB + 2)];
+        int n = 0;
+        float sx, sy;
+        stick_pos(&sx, &sy);
+        quad(v + 6 * n++, sx, sy, STICK_R, w, h, 0x90FFFFFF);
+        quad(v + 6 * n++, sx + g_stick_x * STICK_R / g_aspect, sy + g_stick_y * STICK_R, STICK_R * 0.45f, w, h,
+             0xD0FFFFFF);
+        for (int i = 0; i < NB; i++) {
+            float bx, by;
+            button_pos(k_buttons[i], &bx, &by);
+            uint32_t col = k_buttons[i].color;
+            uint32_t a = (g_buttons & k_buttons[i].bit) ? 0xF0 : 0x90;
+            quad(v + 6 * n++, bx, by, k_buttons[i].r, w, h, (col & 0xFFFFFF) | a << 24);
+        }
+        d->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2 * n, v, sizeof(Vtx));
     }
-    d->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2 * n, v, sizeof(Vtx));
+    if (g_fps_on) {
+        // plain colour: the diffuse only, no texture
+        Vtx v[6 * (1 + 3 * 7)];
+        int n = fps_quads(v, h);
+        d->SetTexture(0, nullptr);
+        d->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        d->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+        d->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+        d->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+        d->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 2 * n, v, sizeof(Vtx));
+    }
     d->EndScene();
     d->SetRenderTarget(0, old);
     if (old) old->Release();
@@ -282,26 +340,80 @@ extern "C" int touch_available(void) { return available(); }
 
 static std::string cfg_path() { return std::string(g_save_dir) + "/touch.cfg"; }
 
-// Port settings kept beside the saves: "<touch controls> <nintendo layout> <skip cutscenes>".
-static bool g_nintendo, g_skip_cutscenes;
+// Port settings kept beside the saves: "<touch controls> <nintendo layout>
+// <skip cutscenes> <fps counter> <gyro aiming>", also written by the launcher.
+static bool g_nintendo, g_skip_cutscenes, g_gyro;
 extern "C" void input_set_nintendo(int on);
 extern "C" void input_set_skip_cutscenes(int on);
+extern "C" void input_set_gyro(int on);
 static void save_cfg() {
     if (FILE *f = fopen(cfg_path().c_str(), "w")) {
-        fprintf(f, "%d %d %d\n", g_touch_on, g_nintendo, g_skip_cutscenes);
+        fprintf(f, "%d %d %d %d %d\n", g_touch_on, g_nintendo, g_skip_cutscenes, g_fps_on, g_gyro);
         fclose(f);
     }
 }
+
+#ifdef __ANDROID__
+#include <jni.h>
+// The launcher, opened over the game with Back, changes options mid-game:
+// 0 touch controls, 1 nintendo layout, 2 skip cutscenes, 3 fps counter, 4 gyro aiming.
+extern "C" JNIEXPORT void JNICALL Java_com_tj_legobatman_LegoBatmanActivity_nativeSetOption(JNIEnv *, jclass, jint id,
+                                                                                           jint value) {
+    bool on = value != 0;
+    switch (id) {
+    case 0: g_touch_on = on; break;
+    case 1: g_nintendo = on; input_set_nintendo(on); break;
+    case 2: g_skip_cutscenes = on; input_set_skip_cutscenes(on); break;
+    case 3: g_fps_on = on; break;
+    case 4: g_gyro = on; input_set_gyro(on); break;
+    default: return;
+    }
+    LOG("launcher: option %d %s", (int)id, on ? "on" : "off");
+}
+#endif
 static uint32_t guest_str(const char *s) {
     uint32_t g = gmalloc((uint32_t)strlen(s) + 1);
     memcpy(MEM + g, s, strlen(s) + 1);
     return g;
 }
 
+// Two extra Video and Port Settings rows, FPS Counter and Gyro Aiming, go
+// after the game's six settings rows, before its Accept and Back rows. The menu is
+// immediate mode: every f_6C6480 call (menu, text, alpha) is one row, counted
+// when the menu opens, so the rows are added by calling it twice more while
+// the Video Settings draw runs, and the input handler shifts the indices.
+static const int VS_FPS_ROW = 6;
+static int g_vs_rows = -1;  // rows drawn so far in f_6C80D0, -1 outside it
+static uint32_t g_vs_text[2];
+extern "C" void f_6C6480_guest(CPU *c);
+static void vs_row(CPU *c, uint32_t menu, int i, bool on, uint32_t alpha) {
+    if (!g_vs_text[i]) g_vs_text[i] = gmalloc(128);
+    char *t = (char *)MEM + g_vs_text[i];
+    const char *v = (const char *)MEM + M32(on ? 0x9D588C : 0x9D5890);  // the game's "On"/"Off"
+    snprintf(t, 128, "%s: %s", i == 0 ? "FPS Counter" : "Gyro Aiming", v);
+    uint32_t sp = c->r[4];
+    c->r[4] = sp - 16;
+    M32(sp - 16) = 0;
+    M32(sp - 12) = menu;
+    M32(sp - 8) = g_vs_text[i];
+    M32(sp - 4) = alpha;
+    f_6C6480_guest(c);
+    c->r[4] = sp;
+}
+extern "C" void f_6C6480(CPU *c) {
+    if (g_vs_rows >= 0 && g_vs_rows++ == VS_FPS_ROW) {
+        uint32_t menu = ARG(0), alpha = M8(0xAD7304);
+        vs_row(c, menu, 0, g_fps_on, alpha);
+        vs_row(c, menu, 1, g_gyro, alpha);
+    }
+    f_6C6480_guest(c);
+}
+
 // Video (and Port) Settings item input handler. Items: 0 Screen Resolution
 // (shown as Resolution Scale, see d3d9_bridge.cpp), 1 Refresh Rate (now
 // Nintendo Button Layout), 2 VSync (now Touch Controls), 3 Aspect Ratio (now
-// Skip Cutscenes). Runs the game's code for the others, then keeps any change
+// Skip Cutscenes), 6-7 FPS Counter and Gyro Aiming (added, see above), 8-9 the
+// game's Accept and Back. Runs the game's code for the others, then keeps any change
 // it made to the VSync byte as the touch-controls choice.
 extern "C" void f_6C42C0_guest(CPU *c);
 extern "C" void f_6C42C0(CPU *c) {
@@ -311,6 +423,28 @@ extern "C" void f_6C42C0(CPU *c) {
     uint32_t in = ARG(0);
     int item = (int16_t)M16(in + 0xA);
     bool back = M32(in + 0x68) != 0;
+    if (available() && !back && (item == VS_FPS_ROW || item == VS_FPS_ROW + 1)) {
+        if (M32(in + 0x5C) || M32(in + 0x60) || M32(in + 0x64)) {
+            if (item == VS_FPS_ROW) {
+                g_fps_on = !g_fps_on;
+                LOG("touch: fps counter %s", g_fps_on ? "on" : "off");
+            } else {
+                g_gyro = !g_gyro;
+                input_set_gyro(g_gyro);
+                LOG("touch: gyro aiming %s", g_gyro ? "on" : "off");
+            }
+            save_cfg();
+            M32(0x99E380) = M32(0x99E390);
+        }
+        RETC(0);
+    }
+    if (available() && !back && item > VS_FPS_ROW + 1) {
+        // the game's own Accept / Back rows, moved down by our two
+        M16(in + 0xA) = (uint16_t)(item - 2);
+        f_6C42C0_guest(c);
+        if ((int16_t)M16(in + 0xA) == item - 2) M16(in + 0xA) = (uint16_t)item;
+        return;
+    }
     if (available() && !back && (item == 1 || item == 3)) {
         if (M32(in + 0x5C) || M32(in + 0x60)) {
             if (item == 1) {
@@ -341,7 +475,9 @@ extern "C" void f_6C42C0(CPU *c) {
 // entry is swapped for the scale digits and On/Off text just while it draws.
 extern "C" void f_6C80D0_guest(CPU *c);
 extern "C" void f_6C80D0(CPU *c) {
-    if (!available() || !M32(0x9D0EEC)) { f_6C80D0_guest(c); return; }  // no mode list yet
+    if (!available()) { f_6C80D0_guest(c); return; }
+    g_vs_rows = 0;  // f_6C6480 adds FPS Counter and Gyro Aiming before the 7th row
+    if (!M32(0x9D0EEC)) { f_6C80D0_guest(c); g_vs_rows = -1; return; }  // no mode list yet
     uint32_t mode = M32(0x9D0EEC) + M32(0x9D0F38) * 16;
     uint32_t w = M32(mode), h = M32(mode + 4), hz = M32(mode + 8);
     int ww = 1280, wh = 720;
@@ -357,6 +493,7 @@ extern "C" void f_6C80D0(CPU *c) {
     M32(0xAD7294) = 3;
     M32(0x9D58B0) = M32(g_skip_cutscenes ? 0x9D588C : 0x9D5890);
     f_6C80D0_guest(c);
+    g_vs_rows = -1;
     M32(mode) = w;
     M32(mode + 4) = h;
     M32(mode + 8) = hz;
@@ -396,12 +533,15 @@ extern "C" void f_524860(CPU *c) {
 extern "C" void touch_setup_guest(void) {
     if (!available()) return;
     if (FILE *f = fopen(cfg_path().c_str(), "r")) {
-        int t = 1, n = 0, k = 0;
-        if (fscanf(f, "%d %d %d", &t, &n, &k) >= 1) { g_touch_on = t != 0; g_nintendo = n != 0; g_skip_cutscenes = k != 0; }
+        int t = 1, n = 0, k = 0, fp = 0, gy = 0;
+        if (fscanf(f, "%d %d %d %d %d", &t, &n, &k, &fp, &gy) >= 1) {
+            g_touch_on = t != 0; g_nintendo = n != 0; g_skip_cutscenes = k != 0; g_fps_on = fp != 0; g_gyro = gy != 0;
+        }
         fclose(f);
     }
     input_set_nintendo(g_nintendo);
     input_set_skip_cutscenes(g_skip_cutscenes);
+    input_set_gyro(g_gyro);
     M8(G_VSYNC_OPTION) = g_touch_on;
     M32(G_ASPECT) = M32(G_ASPECT_MENU) = ASPECT_FROM_RES;
     uint32_t touch = guest_str("Touch Controls"), quit = guest_str("Quit Game"),

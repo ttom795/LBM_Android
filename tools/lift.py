@@ -79,6 +79,7 @@ HOST_OVERRIDES = {
     "exe": {0x51E280,   # IsXInputDevice via WMI -> runtime/input.c
             0x6C42C0,   # Video Settings item input (VSync = touch toggle) -> runtime/touch.cpp
             0x6C80D0,   # Video Settings draw (scale / button layout values) -> runtime/touch.cpp
+            0x6C6480,   # menu row: adds the FPS / gyro rows to Video Settings -> runtime/touch.cpp
             0x7401A0,   # qsort: refills the filtered display mode list -> runtime/touch.cpp
             0x524860},  # pcconfig "Widescreen" setter: forced to From Screen-Res -> runtime/touch.cpp
 }

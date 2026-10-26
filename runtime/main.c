@@ -186,20 +186,26 @@ int main(int argc, char **argv) {
     const char *env = getenv("LB_LOG");
     if (env) g_log_level = atoi(env);
 #ifdef __ANDROID__
-    /* Game files live in the app's external files folder:
-     * <ext>/game holds the install (DATs, Movies, Audio, LEGOBatman.exe,
-     * d3dx9_35.dll, binkw32.dll), <ext>/save the saves, <ext>/log.txt the log. */
+    /* The launcher passes the folder the player chose (argv[1]) and its
+     * port/save (argv[2]); the log goes to <folder>/port/log.txt. Without
+     * them (0.1.6 layout) everything is in the app's external files folder:
+     * <ext>/game the install, <ext>/save the saves, <ext>/log.txt the log. */
     const char *ext = SDL_AndroidGetExternalStoragePath();
-    if (ext) {
-        char logp[512];
+    char logp[1100] = "";
+    if (argc > 2) {
+        snprintf(logp, sizeof logp, "%s/port", argv[1]);
+        mkdir(logp, 0777);
+        snprintf(logp, sizeof logp, "%s/port/log.txt", argv[1]);
+        mkdir(argv[2], 0777);
+    } else if (ext) {
         snprintf(g_game_dir, sizeof g_game_dir, "%s/game", ext);
         snprintf(g_save_dir, sizeof g_save_dir, "%s/save", ext);
         mkdir(g_game_dir, 0777);
         mkdir(g_save_dir, 0777);
         snprintf(logp, sizeof logp, "%s/log.txt", ext);
-        if (freopen(logp, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
-        if (!env) g_log_level = 1;
     }
+    if (logp[0] && freopen(logp, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
+    if (logp[0] && !env) g_log_level = 1;
 #endif
     if (argc > 1) snprintf(g_game_dir, sizeof g_game_dir, "%s", argv[1]);
     if (argc > 2) snprintf(g_save_dir, sizeof g_save_dir, "%s", argv[2]);

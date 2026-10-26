@@ -2,6 +2,7 @@
  * pad fed by the keyboard (desktop) and the touch overlay (Android). */
 #include "rt.h"
 #include <SDL2/SDL.h>
+#include <math.h>
 
 static SDL_GameController *g_pads[4];
 static struct {
@@ -30,6 +31,50 @@ static uint16_t skip_tap(void) {
     if (!g_skip_cutscenes || !in_cutscene_level()) return 0;
     uint32_t t = SDL_GetTicks() % 300;  /* Start at 0-60 ms, A at 150-210 ms */
     return t < 60 ? 0x10 : (t >= 150 && t < 210) ? 0x1000 : 0;
+}
+
+/* Gyro aiming: while B (Special, which aims Batman's batarangs) is held, the
+ * phone's turn rate moves the left stick, so turning or tilting the phone
+ * steers the targeting reticle. */
+static int g_gyro;
+static SDL_Sensor *g_gyro_sensor;
+void input_set_gyro(int on) { g_gyro = on; }
+
+static void gyro_stick(int16_t *lx, int16_t *ly) {
+    if (!g_gyro) {
+        if (g_gyro_sensor) { SDL_SensorClose(g_gyro_sensor); g_gyro_sensor = NULL; }
+        return;
+    }
+    if (!g_gyro_sensor) {
+        static int tried;
+        if (tried) return;
+        tried = 1;
+        if (SDL_InitSubSystem(SDL_INIT_SENSOR) != 0) return;
+        for (int i = 0; i < SDL_NumSensors(); i++)
+            if (SDL_SensorGetDeviceType(i) == SDL_SENSOR_GYRO) { g_gyro_sensor = SDL_SensorOpen(i); break; }
+        LOG("gyro: %s", g_gyro_sensor ? "on" : "no gyroscope");
+        if (!g_gyro_sensor) return;
+        tried = 0;
+    }
+    float d[3];
+    if (SDL_SensorGetData(g_gyro_sensor, d, 3) != 0) return;
+    /* rad/s about the phone's portrait axes (x right, y up, z out of the
+     * screen). Held in landscape with its right side up, the player's up
+     * axis is +x and their right is -y; turning right is negative about up,
+     * tilting the top edge towards them (looking up) positive about right. */
+    float yaw_right = -d[0], pitch_up = -d[1];
+    if (SDL_GetDisplayOrientation(0) == SDL_ORIENTATION_LANDSCAPE_FLIPPED) { yaw_right = -yaw_right; pitch_up = -pitch_up; }
+    const float dead = 0.04f, full = 2.0f;  /* rad/s */
+    float v[2] = {yaw_right, pitch_up};
+    int16_t *out[2] = {lx, ly};
+    for (int k = 0; k < 2; k++) {
+        float a = fabsf(v[k]);
+        if (a < dead) continue;
+        /* start past the game's stick dead zone (~8000) */
+        float m = 8000.0f + (a - dead) / (full - dead) * (32767.0f - 8000.0f);
+        int t = *out[k] + (int)(v[k] < 0 ? -m : m);
+        *out[k] = (int16_t)(t > 32767 ? 32767 : t < -32767 ? -32767 : t);
+    }
 }
 
 static const struct { SDL_Keycode key; uint16_t bit; } k_keymap[] = {
@@ -113,6 +158,8 @@ static void fill_state(int idx, uint32_t g) {
         if (g_virt.rt) rt = g_virt.rt;
         if (g_virt.lx || g_virt.ly) { lx = g_virt.lx; ly = g_virt.ly; }
         if (g_virt.rx || g_virt.ry) { rx = g_virt.rx; ry = g_virt.ry; }
+        if (b & 0x4000) gyro_stick(&lx, &ly);
+        else if (!g_gyro && g_gyro_sensor) gyro_stick(&lx, &ly);  /* closes it */
     }
     { /* a new packet number whenever the reported state changes */
         static uint16_t last_b[4];

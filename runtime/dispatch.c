@@ -14,25 +14,30 @@ static pthread_mutex_t g_thunk_lock = PTHREAD_MUTEX_INITIALIZER;
 uint32_t rt_thunk(ShimFn fn, const char *name) {
     pthread_mutex_lock(&g_thunk_lock);
     if (g_nthunks >= MAX_THUNKS) rt_fatal("out of thunks");
-    uint32_t i = g_nthunks++;
+    uint32_t i = g_nthunks;
     g_thunks[i].fn = fn;
     g_thunks[i].name = name;
+    __atomic_store_n(&g_nthunks, i + 1, __ATOMIC_RELEASE);  /* entry visible before the count */
     pthread_mutex_unlock(&g_thunk_lock);
     return GUEST_THUNK_BASE + i * 4;
 }
 
 const char *rt_thunk_name(uint32_t a) {
-    if (a >= GUEST_THUNK_BASE && (a - GUEST_THUNK_BASE) / 4 < g_nthunks) return g_thunks[(a - GUEST_THUNK_BASE) / 4].name;
+    if (a >= GUEST_THUNK_BASE && (a - GUEST_THUNK_BASE) / 4 < __atomic_load_n(&g_nthunks, __ATOMIC_ACQUIRE)) return g_thunks[(a - GUEST_THUNK_BASE) / 4].name;
     return NULL;
 }
 
-/* Small direct-mapped cache in front of the sorted function table. */
+/* Small direct-mapped cache in front of the sorted function table. A slot
+ * holds one pointer to an immutable table entry, read and written atomically:
+ * a separate address and function pointer could be seen half updated by
+ * another thread (a call to the wrong function). */
 #define CACHE_BITS 14
-static struct { uint32_t addr; GuestFn fn; } g_cache[1 << CACHE_BITS];
+static const FnEntry *g_cache[1 << CACHE_BITS];
 
 static GuestFn lookup(uint32_t a) {
     unsigned h = (a ^ (a >> 13)) & ((1 << CACHE_BITS) - 1);
-    if (g_cache[h].addr == a && g_cache[h].fn) return g_cache[h].fn;
+    const FnEntry *e = __atomic_load_n(&g_cache[h], __ATOMIC_ACQUIRE);
+    if (e && e->addr == a) return e->fn;
     for (unsigned m = 0; m < g_nmodules; m++) {
         const FnEntry *t = g_modules[m].table;
         unsigned n = rt_module_count(m);
@@ -44,8 +49,7 @@ static GuestFn lookup(uint32_t a) {
             else hi = mid;
         }
         if (lo < n && t[lo].addr == a) {
-            g_cache[h].addr = a;
-            g_cache[h].fn = t[lo].fn;
+            __atomic_store_n(&g_cache[h], &t[lo], __ATOMIC_RELEASE);
             return t[lo].fn;
         }
     }
@@ -55,7 +59,7 @@ static GuestFn lookup(uint32_t a) {
 void rt_call(CPU *c, uint32_t t) {
     if (t >= GUEST_THUNK_BASE) {
         uint32_t i = (t - GUEST_THUNK_BASE) / 4;
-        if (i < g_nthunks) {
+        if (i < __atomic_load_n(&g_nthunks, __ATOMIC_ACQUIRE)) {
             TRACE("-> %s", g_thunks[i].name);
             if (!g_thunks[i].fn)
                 rt_fatal("unimplemented import %s (called from %08x)", g_thunks[i].name, M32(c->r[4]));
